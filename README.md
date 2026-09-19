@@ -79,7 +79,7 @@ python -m http.server        # → http://localhost:8000
 - [x] NumPy GPT + verified backprop + web playground
 - [ ] Top-k / top-p sampling controls in playground
 - [ ] BPE tokenizer + word-level demo
-- [ ] Colab GPU notebook for `--big` training
+- [x] Colab GPU notebook for `--big` training → [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/Flynntaggart26/nanogpt-playground/blob/main/train_colab.ipynb)
 
 ## 📚 References
 
