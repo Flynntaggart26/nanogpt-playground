@@ -184,8 +184,22 @@ class TinyGPT:
         g["wpe"] += dx.sum(axis=0)[: p["wpe"].shape[0]]
         return float(loss), g
 
-    def sample(self, start_ids, steps, temperature=1.0, seed=0):
-        """Greedy/temperature sampling. start_ids: list[int]."""
+    def kept_indices(self, logits, top_k=None, top_p=None):
+        """Indices surviving top-k then top-p filtering. Pure function for testability."""
+        order = np.argsort(logits)[::-1]
+        if top_k is not None:
+            order = order[: max(1, top_k)]
+        if top_p is not None and len(order) > 1:
+            z = logits[order] - logits[order].max()
+            e = np.exp(z)
+            pr = e / e.sum()
+            cum = np.cumsum(pr)
+            cut = int(np.searchsorted(cum, top_p, side="left")) + 1
+            order = order[: max(1, min(len(order), cut))]
+        return order
+
+    def sample(self, start_ids, steps, temperature=1.0, seed=0, top_k=None, top_p=None):
+        """Temperature sampling with optional top-k / top-p (nucleus) filtering."""
         rng = np.random.default_rng(seed)
         T = self.cfg["T"]
         ids = list(start_ids)
@@ -193,12 +207,12 @@ class TinyGPT:
             ctx = np.array([ids[-T:]], dtype=np.int64)
             logits, _ = self.forward(ctx)
             z = logits[0, -1] / max(temperature, 1e-6)
-            z = z - z.max()
-            e = np.exp(z)
-            pr = e / e.sum()
             if temperature < 1e-3:
-                nxt = int(np.argmax(pr))
-            else:
-                nxt = int(rng.choice(len(pr), p=pr))
-            ids.append(nxt)
+                ids.append(int(np.argmax(z)))
+                continue
+            keep = self.kept_indices(logits[0, -1], top_k, top_p)
+            zk = z[keep] - z[keep].max()
+            e = np.exp(zk)
+            pr = e / e.sum()
+            ids.append(int(keep[rng.choice(len(keep), p=pr)]))
         return ids

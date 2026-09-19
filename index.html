@@ -42,6 +42,8 @@ footer{padding:14px 22px 30px;color:var(--muted);font-size:.76rem;max-width:1100
 <div class="controls">
 <div class="control"><label>Prompt</label><input id="prompt" value="To be, o" style="width:200px"></div>
 <div class="control"><label>Temperature <span id="tval">0.7</span></label><input type="range" id="temp" min="0" max="1.5" step="0.05" value="0.7"></div>
+<div class="control"><label>Top-k (0=off)</label><input type="number" id="topk" value="0" min="0" max="500" style="width:70px"></div>
+<div class="control"><label>Top-p <span id="pval">1.0</span></label><input type="range" id="topp" min="0.1" max="1" step="0.05" value="1"></div>
 <div class="control"><label>Chars</label><input type="number" id="steps" value="120" min="10" max="500" style="width:80px"></div>
 <div class="control"><label>&nbsp;</label><button id="genBtn" class="primary">Generate →</button></div>
 </div>
@@ -163,26 +165,43 @@ function drawLoss(){
   curve.forEach((v,i)=>{const x=i/(curve.length-1)*r.width,y=110-((v-mn)/Math.max(1e-9,mx-mn))*100;i?ctx.lineTo(x,y):ctx.moveTo(x,y);});
   ctx.stroke();$('lossK').textContent='loss '+curve[0].toFixed(2)+' → '+curve[curve.length-1].toFixed(2)+' ('+curve.length+' pts)';
 }
+function topFilter(z, topK, topP){
+  let idx=z.map((_,i)=>i).sort((a,b)=>z[b]-z[a]);
+  if(topK>0)idx=idx.slice(0,Math.max(1,Math.min(topK,idx.length)));
+  if(topP<1&&idx.length>1){
+    const mx=Math.max(...idx.map(i=>z[i]));
+    const e=idx.map(i=>Math.exp(z[i]-mx)),sm=e.reduce((a,b)=>a+b,0);
+    let acc=0,cut=idx.length;
+    for(let j=0;j<e.length;j++){acc+=e[j]/sm;if(acc>=topP){cut=j+1;break;}}
+    idx=idx.slice(0,Math.max(1,cut));
+  }
+  return idx;
+}
 function generate(){
   if(!W)return;
   const chars=W.chars,stoi={};chars.forEach((c,i)=>stoi[c]=i);
   const T=W.cfg.T,prompt=$('prompt').value.slice(-T);
   let ids=[...prompt].map(ch=>stoi[ch]??0);
   const temp=parseFloat($('temp').value),steps=parseInt($('steps').value),rand=mulberry((Math.random()*1e9)|0);
-  let lastHeads=null;
+  const topK=parseInt($('topk').value||'0'),topP=parseFloat($('topp').value);
+  let lastHeads=null,lastKept=0;
   for(let s=0;s<steps;s++){
     const ctx=ids.slice(-T);
     const {logits,heads}=forward(ctx,W.params,W.cfg);
     lastHeads=heads;
     let z=logits[logits.length-1];
-    if(temp<1e-3){ids.push(z.indexOf(Math.max(...z)));continue;}
-    z=z.map(v=>v/temp);const mx=Math.max(...z);const e=z.map(v=>Math.exp(v-mx));const sm=e.reduce((a,b)=>a+b,0);
-    let r=rand(),acc=0,nxt=0;
-    for(let i=0;i<e.length;i++){acc+=e[i]/sm;if(r<=acc){nxt=i;break;}}
+    if(temp<1e-3){ids.push(z.indexOf(Math.max(...z)));lastKept=z.length;continue;}
+    const keep=topFilter(z.map(v=>v/temp),topK,topP);
+    lastKept=keep.length;
+    const zk=keep.map(i=>z[i]/temp),mx=Math.max(...zk);
+    const e=zk.map(v=>Math.exp(v-mx)),sm=e.reduce((a,b)=>a+b,0);
+    let r=rand(),acc=0,nxt=keep[0];
+    for(let j=0;j<keep.length;j++){acc+=e[j]/sm;if(r<=acc){nxt=keep[j];break;}}
     ids.push(nxt);
   }
   const full=ids.map(i=>W.chars[i]).join('');
-  $('out').innerHTML='<span>'+escapeHtml(prompt)+'</span><span class="gen">'+escapeHtml(full.slice(prompt.length))+'</span>';
+  const filt=(topK>0||topP<1)?' <span class="kv">[sampling from top '+lastKept+'/'+W.chars.length+']</span>':'';
+  $('out').innerHTML='<span>'+escapeHtml(prompt)+'</span><span class="gen">'+escapeHtml(full.slice(prompt.length))+'</span>'+filt;
   paintHeads(lastHeads,ids.slice(-T));
 }
 function escapeHtml(s){return s.replace(/&/g,'&amp;').replace(/</g,'&lt;');}
@@ -195,6 +214,7 @@ function paintHeads(heads,ctxIds){
   }).join('');
 }
 $('temp').oninput=e=>$('tval').textContent=e.target.value;
+$('topp').oninput=e=>$('pval').textContent=parseFloat(e.target.value).toFixed(2);
 $('genBtn').onclick=generate;
 $('tokBtn').onclick=inspect;
 $('themeBtn').onclick=()=>{const h=document.documentElement;h.dataset.theme=h.dataset.theme==='dark'?'light':'dark';drawLoss();};
