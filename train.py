@@ -63,22 +63,39 @@ def main():
     ap.add_argument("--batch", type=int, default=16)
     ap.add_argument("--lr", type=float, default=3e-3)
     ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument("--bpe", action="store_true",
+                    help="train on BPE tokens from bpe.json (proof of word-level pipeline)")
     a = ap.parse_args()
 
     text = load_text(a.full)
-    chars = sorted(set(text))
-    stoi = {ch: i for i, ch in enumerate(chars)}
-    itos = {i: ch for ch, i in stoi.items()}
-    data = np.array([stoi[ch] for ch in text], dtype=np.int64)
+    bpe = None
+    if a.bpe:
+        from bpe import encode as bpe_encode, decode as bpe_decode, get_encoder
+        bpe = json.load(open(os.path.join(HERE, "bpe.json"), encoding="utf-8"))
+        rank = get_encoder(bpe)
+        if not a.full:
+            text = text[:200_000]
+        print("BPE-encoding corpus…")
+        data = np.array(bpe_encode(text, bpe, rank), dtype=np.int64)
+        V = len(bpe["vocab"])
+        itos = None
+        print(f"BPE tokens: {len(data):,} (vs {len(text):,} chars)")
+    else:
+        chars = sorted(set(text))
+        stoi = {ch: i for i, ch in enumerate(chars)}
+        itos = {i: ch for ch, i in stoi.items()}
+        data = np.array([stoi[ch] for ch in text], dtype=np.int64)
+        V = len(chars)
     n = int(len(data) * 0.9)
     train, val = data[:n], data[n:]
 
     if a.big:
-        model = TinyGPT(len(chars), block_size=32, n_layer=2, n_head=4, n_embd=128, seed=a.seed)
+        model = TinyGPT(V, block_size=32, n_layer=2, n_head=4, n_embd=128, seed=a.seed)
     else:
-        model = TinyGPT(len(chars), block_size=16, n_layer=1, n_head=2, n_embd=64, seed=a.seed)
-    print(f"model params: {model.n_params():,} | vocab: {len(chars)} | corpus chars: {len(text):,}")
-    print(f"config: {'big' if a.big else 'tiny-default'} | data: {'full' if a.full else 'subset-first'}")
+        model = TinyGPT(V, block_size=16, n_layer=1, n_head=2, n_embd=64, seed=a.seed)
+    print(f"model params: {model.n_params():,} | vocab: {V} | corpus chars: {len(text):,}")
+    print(f"config: {'big' if a.big else 'tiny-default'} | data: {'full' if a.full else 'subset-first'}"
+          f" | tok: {'bpe' if a.bpe else 'char'}")
 
     iters = a.iters or (2000 if a.full else 300)
     T = model.cfg["T"]
@@ -106,26 +123,33 @@ def main():
             print(f"iter {t}/{iters} train {loss:.3f} val {lv:.3f}")
 
     # samples at two temperatures
+    if a.bpe:
+        start, enc_name, dec = [32], "bpe", lambda ids: bpe_decode(ids, bpe)
+        sample_tag, w_name = "_bpe", "weights_bpe.json"
+    else:
+        start, enc_name = [stoi.get("T", 0)], "char"
+        dec = lambda ids: "".join(itos[i] for i in ids)
+        sample_tag, w_name = "", "weights.json"
     for temp in (0.7, 1.0):
-        ids = model.sample([stoi.get("T", 0)], 300, temperature=temp, seed=1)
-        sample = "".join(itos[i] for i in ids)
-        with open(os.path.join(HERE, f"sample_t{temp}.txt"), "w", encoding="utf-8") as f:
+        ids = model.sample(start, 300, temperature=temp, seed=1)
+        sample = dec(ids)
+        with open(os.path.join(HERE, f"sample_t{temp}{sample_tag}.txt"), "w", encoding="utf-8") as f:
             f.write(sample)
-        print(f"--- sample temp={temp} ---\n{sample[:200]}\n…")
+        print(f"--- {enc_name} sample temp={temp} ---\n{sample[:200]}\n…")
 
     # quantized float16 export for the web demo (mitigation: small + lazy-loadable)
     q = {k: np.round(v.astype(np.float16).astype(np.float64), 4).tolist()
          for k, v in model.p.items()}
-    out = {"cfg": {**model.cfg, "quant": "float16-rounded"},
-           "chars": chars,
+    out = {"cfg": {**model.cfg, "quant": "float16-rounded", "tok": enc_name},
+           "chars": chars if not a.bpe else [bpe["vocab"][str(i)] for i in range(V)],
            "params": q,
            "loss": losses[-1] if losses else None,
            "loss_curve": [round(float(x), 4) for x in losses[::max(1, len(losses) // 60)]]}
-    with open(os.path.join(HERE, "weights.json"), "w", encoding="utf-8") as f:
+    with open(os.path.join(HERE, w_name), "w", encoding="utf-8") as f:
         json.dump(out, f)
     import os as _os
-    sz = _os.path.getsize(os.path.join(HERE, "weights.json")) / 1024
-    print(f"saved weights.json ({sz:.0f} KB, quantized) + samples. loss {losses[0]:.3f} -> {losses[-1]:.3f}")
+    sz = _os.path.getsize(os.path.join(HERE, w_name)) / 1024
+    print(f"saved {w_name} ({sz:.0f} KB, quantized) + samples. loss {losses[0]:.3f} -> {losses[-1]:.3f}")
 
 
 if __name__ == "__main__":

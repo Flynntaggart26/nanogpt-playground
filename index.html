@@ -24,6 +24,7 @@ main{padding:6px 22px 10px;max-width:1100px;margin:0 auto}
 #out .gen{color:var(--teal)}
 .controls{display:flex;gap:10px;flex-wrap:wrap;align-items:end;margin-top:10px}.control{display:flex;flex-direction:column;gap:4px}.control label{font-size:.68rem;color:var(--muted);text-transform:uppercase;letter-spacing:.05em}
 table.heat{border-collapse:collapse;font-size:.7rem;margin-top:6px}table.heat td{width:26px;height:22px;text-align:center;border:1px solid var(--border);font-family:ui-monospace,monospace}
+#tokOut{display:flex;gap:5px;flex-wrap:wrap;margin-top:8px}.tok{font-family:ui-monospace,monospace;font-size:.75rem;padding:3px 8px;border-radius:8px;background:rgba(124,108,255,.15);border:1px solid var(--border)}.tok small{opacity:.55}
 canvas.chart{width:100%;height:120px}
 .kv{color:var(--muted);font-size:.78rem}
 footer{padding:14px 22px 30px;color:var(--muted);font-size:.76rem;max-width:1100px;margin:0 auto}
@@ -51,6 +52,11 @@ footer{padding:14px 22px 30px;color:var(--muted);font-size:.76rem;max-width:1100
 <p class="kv">Each row = one head, each cell = weight on a context char. Causal: upper triangle is always empty (can't see the future).</p></div>
 <div class="card"><h2>📉 Training loss (real run, CPU)</h2><canvas class="chart" id="lossC"></canvas><div class="kv" id="lossK"></div></div>
 </div>
+<div class="card"><h2>🔪 BPE token inspector — how real LLMs split words <span class="kv" id="bpeStat">loading bpe.json…</span></h2>
+<div class="controls"><div class="control"><label>Text</label><input id="tokIn" value="unbelievable ROMEO:" style="width:220px"></div>
+<div class="control"><label>&nbsp;</label><button id="tokBtn" class="primary">Tokenize</button></div></div>
+<div id="tokOut"><span class="kv">…</span></div><div class="kv" id="tokStat"></div>
+<p class="kv">Same greedy-merge algorithm as <code>bpe.py</code> (256 merges, vocab 512) — verified byte-identical to Python. Generation above still uses the char model; this shows the preprocessing real models use.</p></div>
 </main>
 <footer>Forward pass mirrors <code>model.py</code> exactly (same GELU, LayerNorm ε=1e-5, causal mask). Full weights lazy-load via fetch; micro fallback bundled file keeps the demo instant. Single repo, no backend.</footer>
 <script>
@@ -97,7 +103,47 @@ function mulberry(seed){let a=seed>>>0;return function(){a|=0;a=a+0x6D2B79F5|0;l
 
 /* ---- app state ---- */
 let W=null; // {cfg,chars,params}
+let BPE=null, BPE_RANK=null;
 const $=id=>document.getElementById(id);
+/* BPE mirror of bpe.py: byte base vocab + greedy lowest-rank merges.
+   Split regex mirrors Python re (\s+ | \w+ | other) with Unicode word chars. */
+const BPE_SPLIT=/(\s+|[\p{L}\p{N}_]+|[^\p{L}\p{N}_\s])/u;
+function bpeEncode(text){
+  const out=[];const enc=new TextEncoder();
+  for(const w of text.split(BPE_SPLIT)){
+    if(!w)continue;
+    let ids=[...enc.encode(w)];
+    while(ids.length>1){
+      let best=null,bestRank=null;
+      for(let i=0;i<ids.length-1;i++){
+        const r=BPE_RANK.get(ids[i]+','+ids[i+1]);
+        if(r!==undefined&&(bestRank===null||r<bestRank)){best=[ids[i],ids[i+1]];bestRank=r;}
+      }
+      if(best===null)break;
+      const nid=256+bestRank,ids2=[];
+      for(let i=0;i<ids.length;i++){
+        if(i<ids.length-1&&ids[i]===best[0]&&ids[i+1]===best[1]){ids2.push(nid);i++;}
+        else ids2.push(ids[i]);
+      }
+      ids=ids2;
+    }
+    out.push(...ids);
+  }
+  return out;
+}
+function bpeTokStr(id){return id<256?String.fromCharCode(id):(BPE.vocab[String(id)]??'�');}
+function inspect(){
+  if(!BPE){$('tokOut').innerHTML='<span class="kv">bpe.json still loading…</span>';return;}
+  const t=$('tokIn').value,ids=bpeEncode(t);
+  $('tokOut').innerHTML=ids.map(i=>'<span class="tok">'+escapeHtml(bpeTokStr(i))+' <small>'+i+'</small></span>').join('')||'<span class="kv">(empty)</span>';
+  $('tokStat').textContent=t.length+' chars → '+ids.length+' tokens ('+(t.length/Math.max(1,ids.length)).toFixed(2)+' chars/token)';
+}
+async function loadBPE(){
+  try{const r=await fetch('bpe.json');if(!r.ok)throw 0;BPE=await r.json();
+    BPE_RANK=new Map(BPE.merges.map((m,i)=>[m[0]+','+m[1],i]));
+    $('bpeStat').textContent='ready · '+BPE.merges.length+' merges · vocab '+Object.keys(BPE.vocab).length;
+    inspect();}catch(e){$('bpeStat').textContent='bpe.json failed to load — serve over HTTP';}
+}
 async function loadW(){
   for(const f of ['weights.json','fallback_weights.json']){
     try{const r=await fetch(f);if(!r.ok)continue;W=await r.json();
@@ -150,9 +196,10 @@ function paintHeads(heads,ctxIds){
 }
 $('temp').oninput=e=>$('tval').textContent=e.target.value;
 $('genBtn').onclick=generate;
+$('tokBtn').onclick=inspect;
 $('themeBtn').onclick=()=>{const h=document.documentElement;h.dataset.theme=h.dataset.theme==='dark'?'light':'dark';drawLoss();};
 window.addEventListener('resize',drawLoss);
-loadW();
+loadW();loadBPE();
 </script>
 </body>
 </html>

@@ -56,9 +56,11 @@ text → char tokenizer → [embed + pos] → [LN → masked MHA → +resid → 
 nanogpt-playground/
 ├── model.py               # TinyGPT: forward + hand-derived backward + sampling (NumPy only)
 ├── train.py               # CPU training: subset-first, Adam, quantized export, samples
-├── index.html             # Playground: JS inference + attention viz + loss chart
+├── bpe.py                 # BPE tokenizer: learn merges, encode/decode (pure Python)
+├── index.html             # Playground: JS inference + attention viz + loss chart + BPE inspector
 ├── weights.json           # trained checkpoint (quantized, lazy-loaded)
 ├── fallback_weights.json  # 35 KB micro model for instant first paint
+├── bpe.json               # 256 merges, vocab 512 (shared Python ↔ JS)
 └── sample_*.txt           # proof outputs at temperatures 0.7 / 1.0
 ```
 
@@ -71,6 +73,8 @@ pip install numpy
 python train.py              # quick proof-of-life (~minutes on CPU)
 python train.py --full       # full 1MB Shakespeare (needs internet once)
 python train.py --big --full # deeper model, better samples
+python bpe.py --merges 256  # learn BPE tokenizer → bpe.json
+python train.py --bpe        # prove word-level pipeline (BPE tokens, loss drops)
 python -m http.server        # → http://localhost:8000
 ```
 
@@ -78,7 +82,7 @@ python -m http.server        # → http://localhost:8000
 
 - [x] NumPy GPT + verified backprop + web playground
 - [ ] Top-k / top-p sampling controls in playground
-- [ ] BPE tokenizer + word-level demo
+- [x] BPE tokenizer + word-level demo → `bpe.py` (256 merges, 1.62 chars/token, exact roundtrip) + token inspector in playground, JS verified byte-identical to Python on 8 strings
 - [x] Colab GPU notebook for `--big` training → [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/Flynntaggart26/nanogpt-playground/blob/main/train_colab.ipynb)
 
 ## 📚 References
