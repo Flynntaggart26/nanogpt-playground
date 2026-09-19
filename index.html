@@ -1,0 +1,158 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>NanoGPT Playground — GPT from scratch</title>
+<meta name="description" content="Type a prompt, watch a hand-built NumPy transformer generate text. No frameworks, no API.">
+<style>
+:root,[data-theme="dark"]{--bg:#08080f;--card:rgba(255,255,255,.05);--border:rgba(255,255,255,.1);--primary:#7c6cff;--teal:#00e0b0;--ok:#00e0a4;--warn:#ffb800;--text:#f4f4ff;--muted:#9aa0b8;--glow:0 0 24px rgba(124,108,255,.35)}
+[data-theme="light"]{--bg:#f4f5fb;--card:#fff;--border:#e2e5f0;--text:#16162e;--muted:#667085;--glow:none}
+*{box-sizing:border-box}body{margin:0;background:radial-gradient(1200px 600px at 20% -10%,rgba(124,108,255,.25),transparent),radial-gradient(900px 500px at 90% 0%,rgba(0,224,176,.15),transparent),var(--bg);color:var(--text);font-family:Inter,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;min-height:100vh}
+header{display:flex;gap:12px;align-items:center;padding:16px 22px;flex-wrap:wrap}
+.logo{width:38px;height:38px;border-radius:12px;background:linear-gradient(135deg,var(--primary),var(--teal));display:grid;place-items:center;font-weight:800;color:#fff;box-shadow:var(--glow)}
+header h1{font-size:1.15rem;margin:0;flex:1;min-width:220px}header h1 small{display:block;font-size:.76rem;color:var(--muted);font-weight:400}
+button,select,input,textarea{background:var(--card);color:var(--text);border:1px solid var(--border);border-radius:10px;padding:8px 12px;font-size:.85rem}
+button{cursor:pointer}button:hover{border-color:var(--primary)}button.primary{background:linear-gradient(135deg,var(--primary),#4f8cff);border:none;color:#fff;font-weight:600}
+main{padding:6px 22px 10px;max-width:1100px;margin:0 auto}
+.pill{font-size:.75rem;color:var(--muted);border:1px solid var(--border);border-radius:20px;padding:5px 12px;background:var(--card)}
+.toolbar{display:flex;gap:10px;padding:0 22px 12px;flex-wrap:wrap}
+.grid{display:grid;grid-template-columns:1.1fr .9fr;gap:14px}@media(max-width:900px){.grid{grid-template-columns:1fr}}
+.card{background:var(--card);border:1px solid var(--border);border-radius:16px;padding:14px;margin-top:14px}
+.card h2{margin:0 0 8px;font-size:.9rem}
+#out{font-family:ui-monospace,monospace;font-size:.9rem;white-space:pre-wrap;min-height:120px;background:rgba(0,0,0,.3);border-radius:10px;padding:12px}[data-theme="light"] #out{background:#eef0f7}
+#out .gen{color:var(--teal)}
+.controls{display:flex;gap:10px;flex-wrap:wrap;align-items:end;margin-top:10px}.control{display:flex;flex-direction:column;gap:4px}.control label{font-size:.68rem;color:var(--muted);text-transform:uppercase;letter-spacing:.05em}
+table.heat{border-collapse:collapse;font-size:.7rem;margin-top:6px}table.heat td{width:26px;height:22px;text-align:center;border:1px solid var(--border);font-family:ui-monospace,monospace}
+canvas.chart{width:100%;height:120px}
+.kv{color:var(--muted);font-size:.78rem}
+footer{padding:14px 22px 30px;color:var(--muted);font-size:.76rem;max-width:1100px;margin:0 auto}
+</style>
+</head>
+<body>
+<header>
+<div class="logo">G</div>
+<h1>NanoGPT Playground<small>Transformer built from math — NumPy training, JS inference, zero frameworks</small></h1>
+<button id="themeBtn">☀ Theme</button>
+</header>
+<div class="toolbar"><span class="pill" id="statW">loading weights…</span><span class="pill" id="statM">—</span></div>
+<main>
+<div class="card"><h2>✍️ Generate</h2>
+<div class="controls">
+<div class="control"><label>Prompt</label><input id="prompt" value="To be, o" style="width:200px"></div>
+<div class="control"><label>Temperature <span id="tval">0.7</span></label><input type="range" id="temp" min="0" max="1.5" step="0.05" value="0.7"></div>
+<div class="control"><label>Chars</label><input type="number" id="steps" value="120" min="10" max="500" style="width:80px"></div>
+<div class="control"><label>&nbsp;</label><button id="genBtn" class="primary">Generate →</button></div>
+</div>
+<div id="out" style="margin-top:10px"><span class="kv">weights loading…</span></div>
+</div>
+<div class="grid">
+<div class="card"><h2>🧠 Attention — what the last char looked at (per head)</h2><div id="heat"></div>
+<p class="kv">Each row = one head, each cell = weight on a context char. Causal: upper triangle is always empty (can't see the future).</p></div>
+<div class="card"><h2>📉 Training loss (real run, CPU)</h2><canvas class="chart" id="lossC"></canvas><div class="kv" id="lossK"></div></div>
+</div>
+</main>
+<footer>Forward pass mirrors <code>model.py</code> exactly (same GELU, LayerNorm ε=1e-5, causal mask). Full weights lazy-load via fetch; micro fallback bundled file keeps the demo instant. Single repo, no backend.</footer>
+<script>
+/* ---- NumPy-mirror inference (float64 semantics approximated in float64 JS numbers) ---- */
+function matVec(m, v){const o=new Array(m[0].length).fill(0);for(let i=0;i<m.length;i++){const r=m[i],vi=v[i];for(let j=0;j<o.length;j++)o[j]+=r[j]*vi;}return o;}
+function add(a,b){return a.map((x,i)=>x+b[i]);}
+function ln(x,g,b,eps=1e-5){const mu=x.reduce((s,v)=>s+v,0)/x.length;const va=x.reduce((s,v)=>s+(v-mu)*(v-mu),0)/x.length;const inv=1/Math.sqrt(va+eps);return x.map((v,i)=>(v-mu)*inv*g[i]+b[i]);}
+function softmaxRows(a){return a.map(r=>{const mx=Math.max(...r);const e=r.map(v=>Math.exp(v-mx));const s=e.reduce((p,q)=>p+q,0);return e.map(v=>v/s);});}
+function geluVec(x){return x.map(v=>0.5*v*(1+Math.tanh(Math.sqrt(2/Math.PI)*(v+0.044715*v*v*v))));}
+function splitHeads(M,H){const T=M.length,E=M[0].length,D=E/H;const o=[];for(let h=0;h<H;h++){o.push(M.map(row=>row.slice(h*D,(h+1)*D)));}return o;}
+function matMul(A,B){const n=A.length,m=B[0].length,k=B.length;const o=[];for(let i=0;i<n;i++){o.push(new Array(m).fill(0));for(let p=0;p<k;p++){const a=A[i][p];if(a===0)continue;for(let j=0;j<m;j++)o[i][j]+=a*B[p][j];}}return o;}
+function transpose(A){return A[0].map((_,j)=>A.map(r=>r[j]));}
+function forward(idx,P,cfg){
+  const {T:L_T,H,E,D,L}=cfg; const Tt=idx.length;
+  let X=idx.map((t,i)=>add(P.wte[t],P.wpe[i]));
+  const heads=[];
+  for(let li=0;li<L;li++){
+    const k='b'+li+'_';
+    const h=X.map(r=>ln(r,P[k+'ln1g'],P[k+'ln1b']));
+    const Q=matMul(h,P[k+'wq']),K=matMul(h,P[k+'wk']),V=matMul(h,P[k+'wv']);
+    const qh=splitHeads(Q,H),kh=splitHeads(K,H),vh=splitHeads(V,H);
+    const Om=[];
+    for(let hh=0;hh<H;hh++){
+      let att=matMul(qh[hh],transpose(kh[hh])).map(r=>r.map(v=>v/Math.sqrt(D)));
+      for(let i=0;i<Tt;i++)for(let j=i+1;j<Tt;j++)att[i][j]=-1e9;
+      const pr=softmaxRows(att);
+      if(li===L-1)heads.push(pr);
+      Om.push(matMul(pr,vh[hh]));
+    }
+    const merged=X.map((_,i)=>{const row=[];for(let hh=0;hh<H;hh++)row.push(...Om[hh][i]);return row;});
+    const O=matMul(merged,P[k+'wo']);
+    X=X.map((r,i)=>add(r,O[i]));
+    const h2=X.map(r=>ln(r,P[k+'ln2g'],P[k+'ln2b']));
+    const a1=h2.map(r=>geluVec(matVec_add(r,P[k+'w1'],P[k+'b1'])));
+    const M2=matMul(a1,P[k+'w2']).map((r,i)=>add(r,P[k+'b2']));
+    X=X.map((r,i)=>add(r,M2[i]));
+  }
+  const hf=X.map(r=>ln(r,P.lng,P.lnb));
+  const logits=matMul(hf,P.wh).map((r)=>add(r,P.bh));
+  return {logits,heads};
+}
+function matVec_add(v,M,b){const o=new Array(M[0].length).fill(0);for(let i=0;i<M.length;i++){const vi=v[i];for(let j=0;j<o.length;j++)o[j]+=M[i][j]*vi;}return o.map((x,j)=>x+b[j]);}
+function mulberry(seed){let a=seed>>>0;return function(){a|=0;a=a+0x6D2B79F5|0;let t=Math.imul(a^a>>>15,1|a);t=t+Math.imul(t^t>>>7,61|t)^t;return((t^t>>>14)>>>0)/4294967296;};}
+
+/* ---- app state ---- */
+let W=null; // {cfg,chars,params}
+const $=id=>document.getElementById(id);
+async function loadW(){
+  for(const f of ['weights.json','fallback_weights.json']){
+    try{const r=await fetch(f);if(!r.ok)continue;W=await r.json();
+      $('statW').textContent='weights: '+f+' ('+Math.round(JSON.stringify(W.params).length/1024)+' KB)';
+      const c=W.cfg;$('statM').textContent=c.L+' layer · '+c.H+' heads · '+c.E+'-dim · ctx '+c.T+' · '+Object.keys(W.params).length+' tensors';
+      drawLoss();$('out').innerHTML='<span class="kv">ready — press Generate →</span>';return;}
+    catch(e){}
+  }
+  $('statW').textContent='weights failed to load — serve over HTTP';
+  $('out').textContent='Could not load weights.json. Run: python -m http.server';
+}
+function drawLoss(){
+  const c=$('lossC'),ctx=c.getContext('2d');const r=c.getBoundingClientRect();c.width=r.width*2;c.height=240;ctx.scale(2,2);
+  const curve=(W&&W.loss_curve)||[];if(!curve.length)return;
+  const mx=Math.max(...curve),mn=Math.min(...curve);
+  ctx.strokeStyle='#7c6cff';ctx.lineWidth=2;ctx.beginPath();
+  curve.forEach((v,i)=>{const x=i/(curve.length-1)*r.width,y=110-((v-mn)/Math.max(1e-9,mx-mn))*100;i?ctx.lineTo(x,y):ctx.moveTo(x,y);});
+  ctx.stroke();$('lossK').textContent='loss '+curve[0].toFixed(2)+' → '+curve[curve.length-1].toFixed(2)+' ('+curve.length+' pts)';
+}
+function generate(){
+  if(!W)return;
+  const chars=W.chars,stoi={};chars.forEach((c,i)=>stoi[c]=i);
+  const T=W.cfg.T,prompt=$('prompt').value.slice(-T);
+  let ids=[...prompt].map(ch=>stoi[ch]??0);
+  const temp=parseFloat($('temp').value),steps=parseInt($('steps').value),rand=mulberry((Math.random()*1e9)|0);
+  let lastHeads=null;
+  for(let s=0;s<steps;s++){
+    const ctx=ids.slice(-T);
+    const {logits,heads}=forward(ctx,W.params,W.cfg);
+    lastHeads=heads;
+    let z=logits[logits.length-1];
+    if(temp<1e-3){ids.push(z.indexOf(Math.max(...z)));continue;}
+    z=z.map(v=>v/temp);const mx=Math.max(...z);const e=z.map(v=>Math.exp(v-mx));const sm=e.reduce((a,b)=>a+b,0);
+    let r=rand(),acc=0,nxt=0;
+    for(let i=0;i<e.length;i++){acc+=e[i]/sm;if(r<=acc){nxt=i;break;}}
+    ids.push(nxt);
+  }
+  const full=ids.map(i=>W.chars[i]).join('');
+  $('out').innerHTML='<span>'+escapeHtml(prompt)+'</span><span class="gen">'+escapeHtml(full.slice(prompt.length))+'</span>';
+  paintHeads(lastHeads,ids.slice(-T));
+}
+function escapeHtml(s){return s.replace(/&/g,'&amp;').replace(/</g,'&lt;');}
+function paintHeads(heads,ctxIds){
+  if(!heads){$('heat').innerHTML='<span class="kv">—</span>';return;}
+  $('heat').innerHTML=heads.map((h,hi)=>{
+    const last=h[h.length-1];
+    const cells=last.map((w,j)=>{const a=Math.round(w*255);return '<td title="'+escapeHtml(W.chars[ctxIds[j]])+' '+w.toFixed(2)+'" style="background:rgba(124,108,255,'+w.toFixed(2)+')">'+escapeHtml(W.chars[ctxIds[j]])+'</td>';}).join('');
+    return '<div class="kv">head '+hi+'</div><table class="heat"><tr>'+cells+'</tr></table>';
+  }).join('');
+}
+$('temp').oninput=e=>$('tval').textContent=e.target.value;
+$('genBtn').onclick=generate;
+$('themeBtn').onclick=()=>{const h=document.documentElement;h.dataset.theme=h.dataset.theme==='dark'?'light':'dark';drawLoss();};
+window.addEventListener('resize',drawLoss);
+loadW();
+</script>
+</body>
+</html>
